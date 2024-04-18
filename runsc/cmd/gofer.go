@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"github.com/google/subcommands"
@@ -57,6 +58,9 @@ var goferCaps = &specs.LinuxCapabilities{
 	Bounding:  caps,
 	Effective: caps,
 	Permitted: caps,
+	Inheritable: caps,
+	Ambient: caps,
+
 }
 
 // goferSyncFDs contains file descriptors that are used for synchronization
@@ -729,6 +733,40 @@ func waitForFD(fd int, fdName string) error {
 	return nil
 }
 
+func waitForIDAndFD(fd int, fdName string) (int, int, error) {
+	log.Debugf("Waiting on %s %d...", fdName, fd)
+	f := os.NewFile(uintptr(fd), fdName)
+	defer f.Close()
+
+	var uid int
+	var gid int
+	var b [64]byte
+	if _, err := f.Read(b[:]); err != nil {
+		return 0, 0, fmt.Errorf("failed to read uid on %s: %v", fdName, err)
+	}
+
+	if uid, err := strconv.Atoi(string(b[:])); err != nil {
+		e := fmt.Errorf("failed to convert to int:%v :%v", uid, err)
+		return 0, 0, e
+	}
+	if _, err := f.Write([]byte("a")); err != nil {
+		e := fmt.Errorf("failed to send sync on %s: %v", fdName, err)
+		return 0, 0, e
+	}
+
+
+	if _, err := f.Read(b[:]); err != nil {
+                e := fmt.Errorf("failed to reand did on %s: %v", fdName, err)
+                return 0, 0, e
+        }
+
+	if gid, err := strconv.Atoi(string(b[:])); err != nil {
+                e := fmt.Errorf("failed to convert to int:%v %v", gid, err)
+                return 0, 0, e
+        }
+	return uid, gid, nil
+}
+
 // spawnProcMounter executes the /proc unmounter process.
 // It returns a function to wait on the proc unmounter process, which
 // should be called (via defer) in case of errors in order to clean up the
@@ -783,17 +821,19 @@ func (g *goferSyncFDs) syncUsernsForRootless() {
 //
 // Postcondition: All callers must re-exec themselves after this returns.
 func syncUsernsForRootless(fd int) {
-	if err := waitForFD(fd, "userns sync FD"); err != nil {
-		util.Fatalf("failed to sync on userns FD: %v", err)
+	var uid int
+	var gid int
+	if uid, gid, err := waitForIDAndFD(fd, "userns sync FD"); err != nil {
+		util.Fatalf("failed to sync on userns FD:%v: %v %v", uid, gid, err)
 	}
 
 	// SETUID changes UID on the current system thread, so we have
 	// to re-execute current binary.
 	runtime.LockOSThread()
-	if _, _, errno := unix.RawSyscall(unix.SYS_SETUID, 0, 0, 0); errno != 0 {
+	if _, _, errno := unix.RawSyscall(unix.SYS_SETUID, uintptr(uid), 0, 0); errno != 0 {
 		util.Fatalf("failed to set UID: %v", errno)
 	}
-	if _, _, errno := unix.RawSyscall(unix.SYS_SETGID, 0, 0, 0); errno != 0 {
+	if _, _, errno := unix.RawSyscall(unix.SYS_SETGID, uintptr(gid), 0, 0); errno != 0 {
 		util.Fatalf("failed to set GID: %v", errno)
 	}
 }

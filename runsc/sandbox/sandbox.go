@@ -872,6 +872,7 @@ func (s *Sandbox) createSandboxProcess(conf *config.Config, args *Args, startSyn
 	// configured.
 	rootlessEUID := unix.Geteuid() != 0
 	setUserMappings := false
+	var syncFile *os.File
 	if conf.Network == config.NetworkHost || conf.DirectFS {
 		if userns, ok := specutils.GetNS(specs.UserNamespace, args.Spec); ok {
 			log.Infof("Sandbox will be started in container's user namespace: %+v", userns)
@@ -1114,6 +1115,9 @@ func (s *Sandbox) createSandboxProcess(conf *config.Config, args *Args, startSyn
 		if err := SetUserMappings(args.Spec, cmd.Process.Pid); err != nil {
 			return err
 		}
+		if err := SendUidToSandbox(syncFile, args.Spec); err != nil {
+			return err
+		}
 	}
 
 	s.child = true
@@ -1123,6 +1127,40 @@ func (s *Sandbox) createSandboxProcess(conf *config.Config, args *Args, startSyn
 	return nil
 }
 
+func SendUidToSandbox(syncFile *os.File, spec *specs.Spec) error {
+	euid := os.Geteuid()
+	egid := os.Getegid()
+
+	var cuid int
+	var cgid int
+	for _, idMap := range spec.Linux.UIDMappings {
+		if euid >= int(idMap.HostID) && euid < int(idMap.Size) {
+			cuid = euid - int(idMap.HostID) + int(idMap.ContainerID)
+			break
+		}
+	}
+
+	for _, idMap := range spec.Linux.GIDMappings {
+                if egid >= int(idMap.HostID) && euid < int(idMap.Size) {
+                        cgid = egid - int(idMap.HostID) + int(idMap.ContainerID)
+                        break
+                }
+        }
+
+	if _, err := syncFile.Write([]byte(strconv.Itoa(cuid))); err != nil {
+		return fmt.Errorf("write uid to sandbox error: %w", err)
+	}
+
+	var b [1]byte
+	if n, err := syncFile.Read(b[:]); n != 0 || err != nil {
+		return fmt.Errorf("read sync error: %v", err)
+	}
+
+	if _, err := syncFile.Write([]byte(strconv.Itoa(cgid))); err != nil {
+                return fmt.Errorf("write gid to sandbox error: %w", err)
+        }
+	return nil
+}
 // Wait waits for the containerized process to exit, and returns its WaitStatus.
 func (s *Sandbox) Wait(cid string) (unix.WaitStatus, error) {
 	log.Debugf("Waiting for container %q in sandbox %q", cid, s.ID)

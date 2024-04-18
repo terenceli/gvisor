@@ -1315,6 +1315,7 @@ func (c *Container) createGoferProcess(spec *specs.Spec, conf *config.Config, bu
 		{Type: specs.UTSNamespace},
 	}
 
+	var syncFile *os.File
 	rootlessEUID := unix.Geteuid() != 0
 	// Setup any uid/gid mappings, and create or join the configured user
 	// namespace so the gofer's view of the filesystem aligns with the
@@ -1361,6 +1362,10 @@ func (c *Container) createGoferProcess(spec *specs.Spec, conf *config.Config, bu
 		if err := sandbox.SetUserMappings(spec, cmd.Process.Pid); err != nil {
 			return nil, nil, nil, err
 		}
+                if err := sandbox.SendUidToSandbox(syncFile, spec); err != nil {
+                        return nil, nil, nil, err
+                }
+
 	}
 
 	// Set up nvproxy within the Gofer namespace.
